@@ -13,6 +13,8 @@ The client side is written using the React library in JavaScript. To install the
 ### First-Time Installation:
 1. Open a new terminal.
 2. In the terminal, run the command: `npm install`
+3. Install node v14.20.0
+5. ןמדאשךך
 
 ### Running:
 1. Open a new terminal.
@@ -23,9 +25,10 @@ The client side is written using the React library in JavaScript. To install the
 For the server side, Python is required on your computer. If Python is not installed, you can download it [here](https://www.python.org/).
 
 ### First-Time Installation:
-1. In Visual Studio Code, install the Python extension.
-2. Open a new terminal.
-3. In the terminal, run the command: `pip install -r requirements.txt` (If the terminal does not recognize the `pip` command, use: `py -m pip install -r requirements.txt`).
+1. Install the Python Python 3.11.9
+2. In Visual Studio Code or pycharm, install the Python extension.
+4. Open a new terminal.
+5. In the terminal, run the command: `pip install -r requirements.txt` (If the terminal does not recognize the `pip` command, use: `py -m pip install -r requirements.txt`).
 
 ### Running:
 1. Navigate to the `main.py` file.
