@@ -14,7 +14,6 @@ The client side is written using the React library in JavaScript. To install the
 1. Open a new terminal.
 2. In the terminal, run the command: `npm install`
 3. Install node v14.20.0
-5. ןמדאשךך
 
 ### Running:
 1. Open a new terminal.
