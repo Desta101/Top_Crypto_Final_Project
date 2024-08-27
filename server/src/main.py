@@ -1,134 +1,123 @@
-import numpy as np
-import pandas_datareader as web
-from tensorflow import keras
-from sklearn.preprocessing import MinMaxScaler
-import yfinance as yf
-from datetime import datetime, timedelta
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+from datetime import datetime
+from apscheduler.schedulers.background import BackgroundScheduler
 from data.coins import coins
-from utils.utils import timestamp_to_string_date
+from predictions import update_coins_predictions, predict_next_7_days, get_coins_predictions
+from utils.utils import api_get_response
+from invetment import find_best_subset, split_invest_in_subset
+
+app = Flask(__name__)
+CORS(app)
+scheduler = BackgroundScheduler()
 
 
-def get_min_max(prediction):
-    min_index = 0
-    max_index = 0
-    temp_min_index = 0
+@app.route('/invest', methods=['POST'])
+def invest():
+    investment = request.json.get('investment', 0)
+    all_coins = []
 
-    for i in range(1, len(prediction)):
-        if float(prediction[i]) < float(prediction[temp_min_index]):
-            temp_min_index = i
-        elif float(prediction[i]) - float(prediction[temp_min_index]) > float(prediction[max_index]) - float(prediction[min_index]):
-            min_index = temp_min_index
-            max_index = i
+    try:
+        best_subset, profit, accuracy_average = find_best_subset()
+        selected_coins, total_profit = split_invest_in_subset(best_subset, investment, profit)
 
-    return min_index, max_index
+        coins_market_info = api_get_response(
+            'https://api.coingecko.com/api/v3/coins/markets?vs_currency=USD&order=market_cap_desc&per_page=60&page=1'
+            '&sparkline=false'
+        )
 
+        print("API Response for /invest:", coins_market_info)
 
-def coin_prediction(symbol, close, prediction_days):
-    scaler = MinMaxScaler(feature_range=(0, 1))
-    model_inputs = np.array(close)
-    model_inputs = model_inputs.reshape(-1, 1)
-    model_inputs = scaler.fit_transform(model_inputs)
+        if not isinstance(coins_market_info, list):
+            raise ValueError("Unexpected API response format")
 
-    x_test = []
+        for coin_info in coins_market_info:
+            symbol = coin_info.get('symbol', '').upper()
+            if symbol in selected_coins:
+                coin_info.update(selected_coins[symbol])
+                all_coins.append(coin_info)
 
-    for x in range(prediction_days, len(model_inputs)):
-        x_test.append(model_inputs[x-prediction_days:x, 0])
+        return jsonify({'coins': all_coins, 'profit': total_profit, 'accuracy': accuracy_average})
 
-    x_test = np.array(x_test)
-    x_test = np.reshape(x_test, (x_test.shape[0], x_test.shape[1], 1))
-
-    model = keras.models.load_model(f'./src/models/{symbol[:-4]}')
-    prediction_prices = model.predict(x_test)
-    prediction_prices = scaler.inverse_transform(prediction_prices)
-    prediction = list(prediction_prices.flatten())
-    for i in range(len(prediction)):
-        prediction[i] = str(prediction[i])
-    return prediction
+    except Exception as e:
+        app.logger.error(f"Error in /invest endpoint: {str(e)}")
+        return jsonify({"error": "An error occurred while processing your request."}), 500
 
 
-def coin_investment(symbol, close, times, prediction_days):
-    prediction = coin_prediction(symbol, close, prediction_days)
-    start, end = get_min_max(prediction)
-    return {
-        'start': float(prediction[start]),
-        'end': float(prediction[end]),
-        'start_date': timestamp_to_string_date(start + 1),
-        'end_date': timestamp_to_string_date(end + 1),
-        'profit_per_one': float(prediction[end]) - float(prediction[start]),
-        'prediction': [[x, y] for x, y in zip(times, prediction)]
-    }
+@app.route('/single_coin')
+def single_coin():
+    coin_id = request.args.get('coin_id')
+
+    try:
+        response = api_get_response(f'https://api.coingecko.com/api/v3/coins/{coin_id}')
+        if not isinstance(response, dict) or 'symbol' not in response:
+            return jsonify({"error": "Symbol not found in the API response."}), 500
+
+        symbol = response.get('symbol', '').upper()
+
+        if symbol not in coins:
+            return jsonify({"error": f"Coin data for {symbol} not found."}), 500
+
+        return jsonify({
+            'coin': response,
+            'start': coins[symbol].get('start_date'),
+            'end': coins[symbol].get('end_date'),
+            'accuracy': coins[symbol].get('accuracy')
+        })
+
+    except Exception as e:
+        app.logger.error(f"Error in /single_coin endpoint: {str(e)}")
+        return jsonify({"error": "An error occurred while processing your request."}), 500
 
 
-def coin_prediction_custom(close_prices, prediction_days=7):
-    # Ensure we have enough data to make a prediction
-    if len(close_prices) < prediction_days:
-        raise ValueError("Not enough data to make a prediction.")
+@app.route('/coin_chart')
+def coin_chart():
+    coin_id = request.args.get('coin_id')
+    symbol = request.args.get('symbol', '').upper()
 
-    # Calculate the simple moving average for the last 7 days
-    predicted_prices = []
-    for i in range(prediction_days):
-        # The simplest prediction: use the mean of the last N prices as the next price
-        if i == 0:
-            next_price = sum(close_prices[-7:]) / 7  # Mean of the last 7 days
-        else:
-            # Append the last predicted price to close_prices and predict the next
-            close_prices.append(next_price)
-            next_price = sum(close_prices[-7:]) / 7
+    try:
+        response = api_get_response(
+            f'https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart?vs_currency=USD&days=100'
+        )
 
-        predicted_prices.append(next_price)
+        if not isinstance(response, dict) or 'prices' not in response:
+            return jsonify({"error": "Prices data not found in API response."}), 500
 
-    return predicted_prices
+        historical = response['prices'][10:-1]
+        prediction = predict_next_7_days(symbol, historical)
 
+        coins[symbol]['prediction'] = prediction
 
-def predict_next_7_days(symbol, historical):
-    # Extract the last 100 days of prices from the historical data
-    close_prices = [price[1] for price in historical][-100:]
+        return jsonify({
+            'historical': historical,
+            'prediction': prediction
+        })
 
-    prediction_days = 7  # Number of days to predict
-    last_date = datetime.fromtimestamp(historical[-1][0] / 1000)  # Convert the last timestamp to a datetime object
-    times = [(last_date + timedelta(days=i)).strftime('%d.%m.%Y') for i in range(1, prediction_days + 1)]
-
-    # Use the custom prediction function to predict prices for the next 7 days
-    prediction = coin_prediction_custom(close_prices, prediction_days)
-
-    # Format the output as a list of lists with dates and predicted prices
-    formatted_prediction = [[times[i], float(prediction[i])] for i in range(prediction_days)]
-
-    return formatted_prediction
+    except Exception as e:
+        app.logger.error(f"Error in /coin_chart endpoint: {str(e)}")
+        return jsonify({"error": "Failed to fetch market data or predict prices."}), 500
 
 
-def update_coins_predictions():
-    prediction_days = 90
-    future_days = 7
-    currency = 'USD'
-    data_source = 'yahoo'
-    end = datetime.now()
-    start = end - timedelta(prediction_days + future_days)
-    times = [timestamp_to_string_date(day) for day in range(future_days)]
-    cryptocurrencies = [f'{symbol}-{currency}' for symbol in coins.keys()]
-    coins_last_days = web.DataReader(cryptocurrencies, data_source, start, end)
-    for col in coins_last_days.columns:
-        if col[0] == 'Close':
-            coins[col[1][:-4]].update(coin_investment(col[1],
-                                      coins_last_days[col].values, times, prediction_days))
+@app.route('/trending_coins')
+def trending_coins():
+    try:
+        response = api_get_response(
+            'https://api.coingecko.com/api/v3/coins/markets?vs_currency=USD&order=gecko_desc&per_page=10&page=1&sparkline=false&price_change_percentage=24h'
+        )
+
+        if not isinstance(response, list):
+            raise ValueError("Unexpected API response format")
+
+        trending = [coin for coin in response if coin.get('symbol', '').upper() in coins]
+
+        return jsonify({'data': trending})
+
+    except Exception as e:
+        app.logger.error(f"Error in /trending_coins endpoint: {str(e)}")
+        return jsonify({"error": "Failed to fetch trending coins."}), 500
 
 
-
-
-def get_coins_predictions():
-    prediction_days = 90
-    future_days = 7
-    currency = 'USD'
-    end = datetime.now()
-    start = end - timedelta(days=prediction_days + future_days)
-    times = [timestamp_to_string_date(day) for day in range(future_days)]
-
-    all_coins_data = {}
-
-    for symbol in coins.keys():
-        try:
-            # Fetch historical data for each cryptocurrency
-            coin_data = yf.download(f'{symbol}-USD', start=start, end=end)
-            all_coins_data[symbol] = coin_data
-        except Exception as e:
-            print(f"Error fetching data for {symbol}: {e}")
+if __name__ == '__main__':
+    scheduler.add_job(update_coins_predictions, 'cron', day_of_week='mon-sun', hour=0, minute=0)
+    scheduler.start()
+    app.run(debug=True)
