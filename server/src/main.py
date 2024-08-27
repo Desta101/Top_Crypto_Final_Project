@@ -4,10 +4,9 @@ from flask_cors import CORS
 from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 from data.coins import coins
-from predictions import update_coins_predictions, get_coins_predictions
+from predictions import update_coins_predictions, predict_next_7_days, get_coins_predictions
 from utils.utils import api_get_response
 from invetment import find_best_subset, split_invest_in_subset
-
 
 app = Flask(__name__)
 CORS(app)
@@ -43,9 +42,15 @@ def invest():
 @app.route('/single_coin')
 def single_coin():
     coin_id = request.args.get('coin_id')
-    response = api_get_response(
-        f'https://api.coingecko.com/api/v3/coins/{coin_id}')
+    response = api_get_response(f'https://api.coingecko.com/api/v3/coins/{coin_id}')
+    if 'symbol' not in response:
+        return {"error": "Symbol not found in the API response."}, 500
+
     symbol = response['symbol'].upper()
+
+    if symbol not in coins:
+        return {"error": f"Coin data for {symbol} not found."}, 500
+
     return {
         'coin': response,
         'start': coins[symbol]['start_date'],
@@ -57,13 +62,28 @@ def single_coin():
 @app.route('/coin_chart')
 def coin_chart():
     coin_id = request.args.get('coin_id')
-    symbol = request.args.get('symbol')
-    response = api_get_response(
-        f'https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart?vs_currency=USD&days=100')
-    return {
-        'historical': response['prices'][10:-1],
-        'prediction': coins[symbol]['prediction']
-    }
+    symbol = request.args.get('symbol').upper()
+
+    try:
+        response = api_get_response(
+            f'https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart?vs_currency=USD&days=100')
+    except Exception as e:
+        return {"error": f"Failed to fetch market data: {str(e)}"}, 500
+
+    if 'prices' in response:
+        historical = response['prices'][10:-1]
+        try:
+            prediction = predict_next_7_days(symbol, historical)
+        except Exception as e:
+            return {"error": f"Failed to predict prices: {str(e)}"}, 500
+
+        coins[symbol]['prediction'] = prediction
+        return {
+            'historical': historical,
+            'prediction': prediction
+        }
+    else:
+        return {"error": "Prices data not found in API response."}, 500
 
 
 @app.route('/trending_coins')
